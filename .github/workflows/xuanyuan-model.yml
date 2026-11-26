@@ -1,0 +1,88 @@
+name: Xuanyuan real reference 3D modeling
+on:
+  push:
+    paths:
+      - '.github/workflows/xuanyuan-model.yml'
+      - 'inputs/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  model:
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [hunyuan, trellis]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install gradio_client pillow "numpy<2" trimesh bpy==4.3.0
+      - name: Generate 3D mesh from user reference
+        shell: python
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          import os, pathlib, hashlib, json, shutil
+          from PIL import Image
+          from gradio_client import Client, handle_file
+          import trimesh
+          out=pathlib.Path("output")
+          out.mkdir()
+          ref=pathlib.Path("inputs/xuanyuan_front.png")
+          if not ref.exists():
+              ref=pathlib.Path("inputs/xuanyuan_front_preview.webp")
+              assert hashlib.sha256(ref.read_bytes()).hexdigest()=="d058c211beb87d7c09b6631eaa62e7bd6b57043e2098123cc0eaf3cadf4ee1d0"
+          im=Image.open(ref)
+          print("VERIFIED REFERENCE",str(ref),im.size,flush=True)
+          im.convert("RGB").save(out/"reference.png")
+          img=handle_file(str(out/"reference.png"))
+          engine=os.environ["ENGINE"]
+          if engine=="hunyuan":
+              c=Client("tencent/Hunyuan3D-2.1")
+              result=c.predict(img,None,None,None,None,20,5.0,1234,256,True,8000,False,api_name="/shape_generation")
+          else:
+              c=Client("microsoft/TRELLIS.2")
+              c.predict(api_name="/start_session")
+              p=c.predict(img,api_name="/preprocess_image")
+              c.predict(p,0,"512",7.5,0.7,6,5.0,7.5,0.5,6,3.0,1.0,0.0,6,3.0,api_name="/image_to_3d")
+              result=c.predict(100000,1024,api_name="/extract_glb")
+          def files(v):
+              if isinstance(v,dict):
+                  for x in v.values(): yield from files(x)
+              elif isinstance(v,(list,tuple)):
+                  for x in v: yield from files(x)
+              elif isinstance(v,str) and len(v)<1024 and not v.startswith("<"):
+                  p=pathlib.Path(v)
+                  if p.is_file() and p.suffix.lower()==".glb": yield p
+          paths=list(dict.fromkeys(files(result)))
+          if not paths: raise RuntimeError("No actual GLB returned")
+          shutil.copyfile(paths[0],out/"xuanyuan_raw.glb")
+          scene=trimesh.load(out/"xuanyuan_raw.glb",force="scene")
+          stats={"engine":engine,"source":str(ref),"input_size":im.size,"vertices":sum(len(m.vertices) for m in scene.geometry.values()),"faces":sum(len(m.faces) for m in scene.geometry.values()),"rigged":False,"final_avatar":False}
+          assert stats["vertices"]>0 and stats["faces"]>0
+          (out/"mesh_report.json").write_text(json.dumps(stats,indent=2))
+          print("VERIFIED USER MODEL",stats,flush=True)
+      - name: Save actual Blender scene
+        shell: python
+        run: |
+          import bpy, pathlib, os, sys
+          out=pathlib.Path("output").resolve()
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          bpy.ops.import_scene.gltf(filepath=str(out/"xuanyuan_raw.glb"))
+          assert any(o.type=="MESH" for o in bpy.context.scene.objects)
+          bpy.ops.wm.save_as_mainfile(filepath=str(out/"xuanyuan_raw.blend"))
+          assert (out/"xuanyuan_raw.blend").stat().st_size>0
+          print("BLEND SAVED",flush=True)
+          sys.stdout.flush()
+          sys.stderr.flush()
+          os._exit(0)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-${{ matrix.engine }}
+          path: output/
+          if-no-files-found: warn
