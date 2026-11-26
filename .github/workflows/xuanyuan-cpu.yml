@@ -1,0 +1,72 @@
+name: Xuanyuan CPU 3D generation
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-cpu.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  triposr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU inference engine
+        run: |
+          git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /tmp/TripoSR
+          python -m pip install 'numpy<2' torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          python -m pip install 'numpy<2' omegaconf==2.3.0 Pillow einops==0.7.0 transformers==4.35.0 'huggingface-hub<1' 'trimesh>=4.0.5,<5' 'rembg[cpu]' 'imageio[ffmpeg]' xatlas==0.0.9 moderngl==5.10.0 PyMCubes
+          # Replace only the marching-cubes backend with a CPU implementation.
+          cat > /tmp/TripoSR/torchmcubes.py <<'PY'
+          import mcubes
+          import torch
+          def marching_cubes(volume, level):
+              vertices, faces = mcubes.marching_cubes(volume.detach().cpu().numpy(), level)
+              return torch.from_numpy(vertices[:, ::-1].copy()).float(), torch.from_numpy(faces.astype("int64"))
+          PY
+      - name: Run real CPU inference
+        run: |
+          mkdir -p output
+          ref="$GITHUB_WORKSPACE/inputs/xuanyuan_front.png"
+          if [ ! -f "$ref" ]; then ref="$GITHUB_WORKSPACE/inputs/xuanyuan_front_preview.webp"; fi
+          cp "$ref" output/
+          cd /tmp/TripoSR
+          python run.py "$ref" --device cpu --chunk-size 4096 --mc-resolution 160 --model-save-format glb --output-dir "$GITHUB_WORKSPACE/output"
+          test -s "$GITHUB_WORKSPACE/output/0/mesh.glb"
+      - name: Validate geometry
+        shell: python
+        run: |
+          import trimesh, pathlib, json
+          p=pathlib.Path("output/0/mesh.glb")
+          scene=trimesh.load(p,force="scene")
+          stats={"vertices":sum(len(m.vertices) for m in scene.geometry.values()),"faces":sum(len(m.faces) for m in scene.geometry.values()),"engine":"TripoSR CPU","rigged":False,"final_avatar":False}
+          assert stats["vertices"]>0 and stats["faces"]>0
+          print("VERIFIED MODEL",stats,flush=True)
+          pathlib.Path("output/report.json").write_text(json.dumps(stats,indent=2))
+      - name: Install Blender
+        run: python -m pip install "numpy<2" bpy==4.3.0
+      - name: Save Blender source
+        shell: python
+        run: |
+          import bpy, os, sys, pathlib
+          p=pathlib.Path("output").resolve()
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          bpy.ops.import_scene.gltf(filepath=str(p/"0/mesh.glb"))
+          assert any(o.type=="MESH" for o in bpy.context.scene.objects)
+          bpy.ops.wm.save_as_mainfile(filepath=str(p/"xuanyuan.blend"))
+          sys.stdout.flush()
+          sys.stderr.flush()
+          os._exit(0)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-triposr-cpu
+          path: output/
+          if-no-files-found: warn
