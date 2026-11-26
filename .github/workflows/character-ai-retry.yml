@@ -1,0 +1,111 @@
+name: Character specific AI inference retry
+on:
+  push:
+    paths: ['.github/workflows/character-ai-retry.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inference:
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [trellis, hunyuan-shape, charactergen, stdgen]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install gradio_client pillow "numpy<2" bpy==4.3.0
+      - name: Generate from official character example
+        env:
+          MODEL: ${{ matrix.model }}
+        shell: python
+        run: |
+          import pathlib, os, shutil, json, re
+          from gradio_client import Client, handle_file
+          from huggingface_hub import HfApi, hf_hub_download
+          from PIL import Image
+          out=pathlib.Path("output")
+          out.mkdir()
+          src="VAST-AI/CharacterGen"
+          candidates=sorted(f for f in HfApi().list_repo_files(src,repo_type="space") if "/examples/" in f.lower() and f.lower().endswith((".png",".jpg",".webp")))
+          print("Character samples:", candidates, flush=True)
+          if not candidates: raise RuntimeError("No official character examples")
+          chosen=candidates[0]
+          path=hf_hub_download(src,chosen,repo_type="space")
+          Image.open(path).convert("RGBA").save(out/"reference.png")
+          print("INPUT",src,chosen,flush=True)
+          model=os.environ["MODEL"]
+          spaces={"trellis":"microsoft/TRELLIS.2","hunyuan-shape":"tencent/Hunyuan3D-2.1","charactergen":src,"stdgen":"hyz317/StdGEN"}
+          c=Client(spaces[model])
+          schema=c.view_api(return_format="dict")
+          (out/"api.json").write_text(json.dumps(schema,default=str))
+          img=handle_file(str(out/"reference.png"))
+          if model=="trellis":
+              c.predict(api_name="/start_session")
+              p=c.predict(img,api_name="/preprocess_image")
+              print("PREPROCESS SUCCESS",flush=True)
+              c.predict(p,0,"512",7.5,0.7,6,5.0,7.5,0.5,6,3.0,1.0,0.0,6,3.0,api_name="/image_to_3d")
+              result=c.predict(100000,1024,api_name="/extract_glb")
+          elif model=="hunyuan-shape":
+              result=c.predict(img,None,None,None,None,10,5.0,1234,128,True,8000,False,api_name="/shape_generation")
+          elif model=="charactergen":
+              apis=schema["named_endpoints"]
+              def locate(name,n):
+                  keys=[k for k,v in apis.items() if name in k.lower() and len(v["parameters"])==n]
+                  if not keys: raise RuntimeError("No matching live endpoint: "+name+" "+str(list(apis)))
+                  return keys[0]
+              views=c.predict(img,512,768,2333,25,True,api_name=locate("gen4views",6))
+              print("4 VIEWS RETURNED",str(views)[:300],flush=True)
+              right,back,left,front=views
+              def f(v):
+                  return handle_file(v) if isinstance(v,str) else v
+              result=c.predict(f(back),f(front),f(right),f(left),True,3,api_name=locate("process_images",6))
+          else:
+              # Inspect actual endpoint signatures rather than guessing a function name.
+              # Only automatically invoke a single-image pipeline with supported defaults.
+              apis=schema["named_endpoints"]
+              options=[]
+              for k,v in apis.items():
+                  ps=v["parameters"]
+                  rs=v["returns"]
+                  if any("Model3D" in str(x.get("component","")) or "File" in str(x.get("component","")) for x in rs) and len(ps)>0:
+                      if ("Image" in str(ps[0].get("component","")) and all(x.get("parameter_has_default",False) for x in ps[1:])):
+                          options.append(k)
+              if not options:
+                  raise RuntimeError("Multi-stage StdGEN API requires explicit integration: "+str(list(apis)))
+              result=c.predict(img,api_name=options[0])
+          print("RETURN",str(result)[:1200],flush=True)
+          def flatten(v):
+              if isinstance(v,dict):
+                  if "path" in v: yield from flatten(v["path"])
+                  else:
+                      for x in v.values(): yield from flatten(x)
+              elif isinstance(v,(list,tuple)):
+                  for x in v: yield from flatten(x)
+              elif isinstance(v,str) and len(v)<1024 and not v.startswith("<"):
+                  p=pathlib.Path(v)
+                  if p.is_file() and p.suffix.lower() in (".glb",".gltf",".obj",".ply",".stl"): yield p
+          meshes=list(dict.fromkeys(flatten(result)))
+          if not meshes: raise RuntimeError("No mesh returned")
+          import bpy
+          for i,p in enumerate(meshes):
+              bpy.ops.wm.read_factory_settings(use_empty=True)
+              if p.suffix.lower() in (".glb",".gltf"): bpy.ops.import_scene.gltf(filepath=str(p))
+              elif p.suffix.lower()==".obj": bpy.ops.wm.obj_import(filepath=str(p))
+              elif p.suffix.lower()==".ply": bpy.ops.wm.ply_import(filepath=str(p))
+              else: bpy.ops.wm.stl_import(filepath=str(p))
+              objs=[o for o in bpy.context.scene.objects if o.type=="MESH"]
+              verts=sum(len(o.data.vertices) for o in objs)
+              faces=sum(len(o.data.polygons) for o in objs)
+              assert verts and faces
+              print("VERIFIED",model,verts,faces,flush=True)
+              bpy.ops.export_scene.gltf(filepath=str((out/f"model_{i}.glb").resolve()),export_format="GLB")
+              bpy.ops.wm.save_as_mainfile(filepath=str((out/f"model_{i}.blend").resolve()))
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: character-test-${{ matrix.model }}
+          path: output/
