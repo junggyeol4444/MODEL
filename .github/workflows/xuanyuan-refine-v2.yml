@@ -1,0 +1,190 @@
+name: Xuanyuan corrected axis and headless UV reconstruction
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-refine-v2.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-triposr-cpu
+          run-id: 45773553755
+          github-token: ${{ github.token }}
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "numpy<2" bpy==4.3.0 pillow trimesh
+      - name: Render the real mesh in multiple directions
+        shell: python
+        run: |
+          import bpy, math, pathlib, os, sys, json
+          from mathutils import Vector, Matrix
+          from PIL import Image, ImageOps, ImageDraw
+          out=pathlib.Path("review").resolve()
+          out.mkdir()
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          bpy.ops.import_scene.gltf(filepath=str(pathlib.Path("source/0/mesh.glb").resolve()))
+          meshes=[o for o in bpy.context.scene.objects if o.type=="MESH"]
+          assert meshes
+          # In imported glTF the character is lying on the negative Y axis.
+          # The previously rendered +X view is the visible front.
+          correction=Matrix.Rotation(-math.pi/2,4,"Z") @ Matrix.Rotation(-math.pi/2,4,"X")
+          for o in meshes: o.matrix_world=correction @ o.matrix_world
+          bpy.context.view_layer.update()
+          points=[o.matrix_world @ Vector(v) for o in meshes for v in o.bound_box]
+          mn=Vector(tuple(min(v[i] for v in points) for i in range(3)))
+          mx=Vector(tuple(max(v[i] for v in points) for i in range(3)))
+          center=(mn+mx)/2
+          size=max(mx-mn)
+          print("MESH BOUNDS",list(mn),list(mx),flush=True)
+          for o in meshes:
+              if not o.data.color_attributes: continue
+              attr=o.data.color_attributes[0]
+              mat=bpy.data.materials.new("Actual mesh vertex colors")
+              mat.use_nodes=True
+              nodes=mat.node_tree.nodes
+              nodes.clear()
+              v=nodes.new("ShaderNodeVertexColor")
+              v.layer_name=attr.name
+              em=nodes.new("ShaderNodeEmission")
+              outnode=nodes.new("ShaderNodeOutputMaterial")
+              mat.node_tree.links.new(v.outputs["Color"],em.inputs["Color"])
+              mat.node_tree.links.new(em.outputs[0],outnode.inputs["Surface"])
+              o.data.materials.clear()
+              o.data.materials.append(mat)
+          scene=bpy.context.scene
+          scene.render.engine="CYCLES"
+          scene.cycles.device="CPU"
+          scene.cycles.samples=8
+          scene.render.resolution_x=420
+          scene.render.resolution_y=640
+          scene.render.resolution_percentage=100
+          scene.world=bpy.data.worlds.new("Neutral background")
+          scene.world.use_nodes=True
+          scene.world.node_tree.nodes["Background"].inputs[0].default_value=(0.35,0.35,0.35,1)
+          scene.view_settings.view_transform="Standard"
+          bpy.ops.object.camera_add()
+          cam=bpy.context.object
+          cam.data.type="ORTHO"
+          cam.data.ortho_scale=size*1.1
+          scene.camera=cam
+          for i,angle in enumerate((0,90,180,270)):
+              rad=math.radians(angle)
+              cam.location=center+Vector((math.sin(rad)*size*3,-math.cos(rad)*size*3,0))
+              cam.rotation_euler=(center-cam.location).to_track_quat("-Z","Y").to_euler()
+              scene.render.filepath=str(out/f"view_{i}.png")
+              bpy.ops.render.render(write_still=True)
+          sheet=Image.new("RGB",(420*5,680),"white")
+          ref=Image.open("source/xuanyuan_front_preview.webp").convert("RGB")
+          ref.thumbnail((420,640))
+          sheet.paste(ref,((420-ref.width)//2,(640-ref.height)//2))
+          draw=ImageDraw.Draw(sheet)
+          draw.text((20,650),"INPUT (LOW RES)",fill="black")
+          for i in range(4):
+              sheet.paste(Image.open(out/f"view_{i}.png").convert("RGB"),((i+1)*420,0))
+              draw.text(((i+1)*420+20,650),f"MODEL ANGLE {i*90}",fill="black")
+          sheet.save(out/"comparison.png")
+          bpy.ops.export_scene.gltf(filepath=str(out/"upright_draft.glb"),export_format="GLB",export_cameras=False,export_lights=False)
+          print("COMPARISON SAVED",flush=True)
+          sys.stdout.flush()
+          sys.stderr.flush()
+          os._exit(0)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-upright-review
+          path: review/
+  refine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU reconstruction tools
+        run: |
+          git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git /tmp/TripoSR
+          python -m pip install 'numpy<2' torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          python -m pip install 'numpy<2' omegaconf==2.3.0 Pillow einops==0.7.0 transformers==4.35.0 'huggingface-hub<1' 'trimesh>=4.0.5,<5' 'rembg[cpu]' 'imageio[ffmpeg]' xatlas==0.0.9 moderngl==5.10.0 PyMCubes
+          cat > /tmp/TripoSR/torchmcubes.py <<'PY'
+          import mcubes
+          import torch
+          def marching_cubes(volume, level):
+              v,f=mcubes.marching_cubes(volume.detach().cpu().numpy(), level)
+              return torch.from_numpy(v[:,::-1].copy()).float(),torch.from_numpy(f.astype("int64"))
+          PY
+      - name: Configure software OpenGL display
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb xauth libgl1-mesa-dri libegl1
+          # Explicitly use EGL instead of the unavailable X11 display.
+          sed -i 's/moderngl.create_context(standalone=True)/moderngl.create_standalone_context(backend="egl")/' /tmp/TripoSR/tsr/bake_texture.py
+      - name: Extract higher resolution mesh and UV texture
+        run: |
+          mkdir -p output
+          ref="$GITHUB_WORKSPACE/inputs/xuanyuan_front.png"
+          if [ ! -f "$ref" ]; then ref="$GITHUB_WORKSPACE/inputs/xuanyuan_front_preview.webp"; fi
+          cp "$ref" output/
+          cd /tmp/TripoSR
+          LIBGL_ALWAYS_SOFTWARE=1 python run.py "$ref" --device cpu --chunk-size 4096 --mc-resolution 256 --model-save-format obj --bake-texture --texture-resolution 1024 --output-dir "$GITHUB_WORKSPACE/output"
+          test -s "$GITHUB_WORKSPACE/output/0/mesh.obj"
+          test -s "$GITHUB_WORKSPACE/output/0/texture.png"
+      - run: python -m pip install "numpy<2" bpy==4.3.0
+      - name: Export textured GLB and Blender file
+        shell: python
+        run: |
+          import bpy,pathlib,sys,os,json,math
+          from mathutils import Matrix, Vector
+          p=pathlib.Path("output").resolve()
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          bpy.ops.wm.obj_import(filepath=str(p/"0/mesh.obj"),forward_axis='NEGATIVE_Z',up_axis='Y')
+          meshes=[o for o in bpy.context.scene.objects if o.type=="MESH"]
+          assert meshes
+          for o in meshes:
+              assert o.data.uv_layers
+              mat=bpy.data.materials.new("Baked AI texture")
+              mat.use_nodes=True
+              bs=mat.node_tree.nodes.get("Principled BSDF")
+              tex=mat.node_tree.nodes.new("ShaderNodeTexImage")
+              tex.image=bpy.data.images.load(str(p/"0/texture.png"))
+              tex.image.pack()
+              mat.node_tree.links.new(tex.outputs["Color"],bs.inputs["Base Color"])
+              o.data.materials.clear()
+              o.data.materials.append(mat)
+          correction=Matrix.Rotation(-math.pi/2,4,"Z") @ Matrix.Rotation(-math.pi/2,4,"X")
+          for o in meshes: o.matrix_world=correction @ o.matrix_world
+          bpy.context.view_layer.update()
+          points=[o.matrix_world @ Vector(v) for o in meshes for v in o.bound_box]
+          mn=Vector(tuple(min(v[i] for v in points) for i in range(3)))
+          mx=Vector(tuple(max(v[i] for v in points) for i in range(3)))
+          assert (mx-mn).z>max((mx-mn).x,(mx-mn).y)
+          center=(mn+mx)/2
+          scale=1.8/(mx-mn).z
+          correction=Matrix.Translation(Vector((0,0,-mn.z*scale))) @ Matrix.Scale(scale,4) @ Matrix.Translation(Vector((-center.x,-center.y,0)))
+          for o in meshes: o.matrix_world=correction @ o.matrix_world
+          bpy.context.view_layer.update()
+          stats={"vertices":sum(len(o.data.vertices) for o in meshes),"faces":sum(len(o.data.polygons) for o in meshes),"uv_baked":True,"rigged":False}
+          (p/"report.json").write_text(json.dumps(stats,indent=2))
+          print("REFINED MODEL",stats,flush=True)
+          bpy.ops.export_scene.gltf(filepath=str(p/"xuanyuan_textured.glb"),export_format="GLB")
+          bpy.ops.wm.save_as_mainfile(filepath=str(p/"xuanyuan_textured.blend"))
+          sys.stdout.flush()
+          sys.stderr.flush()
+          os._exit(0)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-refined-texture-v2
+          path: output/
