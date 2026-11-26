@@ -1,0 +1,90 @@
+name: Generate actual 3D AI sample
+on:
+  push:
+    paths: ['.github/workflows/avatar-generation-test.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  generate:
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [trellis, hunyuan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install inference client and Blender
+        run: python -m pip install gradio_client "numpy<2" bpy==4.3.0 pillow
+      - name: Run actual inference on official public demo sample
+        shell: python
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          import os, pathlib, shutil, json
+          from gradio_client import Client, handle_file
+          from huggingface_hub import HfApi, hf_hub_download
+          from PIL import Image
+          out = pathlib.Path("output")
+          out.mkdir()
+          api = HfApi()
+          source = "microsoft/TRELLIS.2"
+          files = api.list_repo_files(source, repo_type="space")
+          candidates = [f for f in files if f.lower().endswith((".png",".jpg",".jpeg",".webp")) and any(x in f.lower() for x in ("example","sample","asset")) and not any(x in f.lower() for x in ("logo","banner","icon","preview","diagram"))]
+          if not candidates:
+              source = "tencent/Hunyuan3D-2.1"
+              files = api.list_repo_files(source, repo_type="space")
+              candidates = [f for f in files if f.lower().endswith((".png",".jpg",".jpeg",".webp")) and any(x in f.lower() for x in ("example","sample","asset")) and not any(x in f.lower() for x in ("logo","banner","icon","preview","diagram"))]
+          if not candidates:
+              raise RuntimeError("No official demo image found")
+          def rank(p):
+              p=p.lower()
+              return (not any(x in p for x in ("anime","character","human","man","boy","person","girl")), p)
+          print("Public example candidates:", candidates, flush=True)
+          chosen = sorted(candidates,key=rank)[0]
+          path = hf_hub_download(source, chosen, repo_type="space")
+          Image.open(path).convert("RGBA").save(out/"reference.png")
+          (out/"source.json").write_text(json.dumps({"space":source,"path":chosen,"test_only":True}))
+          print("Test input:",source,chosen,flush=True)
+          if os.environ["MODEL"]=="trellis":
+              c=Client("microsoft/TRELLIS.2")
+              c.predict(api_name="/start_session")
+              img=c.predict(handle_file(str(out/"reference.png")),api_name="/preprocess_image")
+              print("Preprocessed",flush=True)
+              c.predict(img,0,"512",7.5,0.7,12,5.0,7.5,0.5,12,3.0,1.0,0.0,12,3.0,api_name="/image_to_3d")
+              result=c.predict(100000,1024,api_name="/extract_glb")
+          else:
+              c=Client("tencent/Hunyuan3D-2.1")
+              result=c.predict(handle_file(str(out/"reference.png")),None,None,None,None,30,5.0,1234,256,True,8000,False,api_name="/generation_all")
+          print("Inference returned:", str(result)[:2000],flush=True)
+          paths=[pathlib.Path(x) for x in (result if isinstance(result,(list,tuple)) else [result]) if isinstance(x,str) and len(x)<4096 and not x.startswith("<") and pathlib.Path(x).is_file()]
+          meshes=[p for p in paths if p.suffix.lower() in (".glb",".gltf",".obj",".ply",".stl")]
+          if not meshes:
+              raise RuntimeError("No model file returned")
+          import bpy
+          for i,p in enumerate(meshes):
+              bpy.ops.wm.read_factory_settings(use_empty=True)
+              if p.suffix.lower() in (".glb",".gltf"):
+                  bpy.ops.import_scene.gltf(filepath=str(p))
+              elif p.suffix.lower()==".obj":
+                  bpy.ops.wm.obj_import(filepath=str(p))
+              elif p.suffix.lower()==".ply":
+                  bpy.ops.wm.ply_import(filepath=str(p))
+              else:
+                  bpy.ops.wm.stl_import(filepath=str(p))
+              objects=[o for o in bpy.context.scene.objects if o.type=="MESH"]
+              verts=sum(len(o.data.vertices) for o in objects)
+              faces=sum(len(o.data.polygons) for o in objects)
+              assert verts>0 and faces>0
+              print("VERIFIED MODEL",i,verts,faces,flush=True)
+              bpy.ops.export_scene.gltf(filepath=str((out/f"sample_{i}.glb").resolve()),export_format="GLB")
+              bpy.ops.wm.save_as_mainfile(filepath=str((out/f"sample_{i}.blend").resolve()))
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-sample-${{ matrix.model }}
+          path: output/
+          if-no-files-found: warn
