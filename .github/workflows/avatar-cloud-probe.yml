@@ -1,0 +1,44 @@
+name: Avatar cloud environment probe
+on:
+  push:
+    paths:
+      - '.github/workflows/avatar-cloud-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check network
+        shell: python
+        run: |
+          import platform, shutil, urllib.request
+          print(platform.platform(), flush=True)
+          print("GPU tool:", shutil.which("nvidia-smi"), flush=True)
+          for url in ["https://github.com", "https://huggingface.co/api/spaces/microsoft/TRELLIS.2", "https://pypi.org/simple/gradio-client/"]:
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  print(url, r.status, flush=True)
+      - name: Install Blender Python and Gradio client
+        run: python -m pip install gradio_client bpy==4.3.0
+      - name: Verify installation and public AI interface
+        shell: python
+        run: |
+          import bpy
+          from gradio_client import Client
+          print("Blender:", bpy.app.version_string, flush=True)
+          for space in ["microsoft/TRELLIS.2", "tencent/Hunyuan3D-2.1"]:
+              try:
+                  print("Checking", space, flush=True)
+                  Client(space).view_api()
+              except Exception as e:
+                  print(type(e).__name__, str(e), flush=True)
+                  raise
