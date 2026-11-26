@@ -75,9 +75,9 @@ nt.links.new(u.outputs[0],tex.inputs["Vector"])
 nt.links.new(tex.outputs["Color"],nt.nodes.get("Principled BSDF").inputs["Base Color"])
 nt.nodes.get("Principled BSDF").inputs["Roughness"].default_value=.8
 m.materials.clear();m.materials.append(new)
-m.uv_layers.remove(m.uv_layers["FrontReference"])
+m.uv_layers.remove(m.uv_layers["RearReference"])
 m.uv_layers.active=m.uv_layers[original_uv]
-m.color_attributes.remove(m.color_attributes["FrontVisibility"])
+m.color_attributes.remove(m.color_attributes["RearVisibility"])
 bpy.ops.export_scene.gltf(filepath=str(p/"xuanyuan_multiview.glb"),export_format="GLB")
 bpy.ops.wm.save_as_mainfile(filepath=str(p/"xuanyuan_multiview.blend"))
 # Render actual model from four directions, using unlit texture for inspection.
