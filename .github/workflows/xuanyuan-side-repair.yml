@@ -1,0 +1,39 @@
+name: Xuanyuan reference side profile repair
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-side-repair.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-rear-projection-fixed
+          run-id: 45778761323
+          github-token: ${{ github.token }}
+          path: output/base
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-geometry-fusion-candidate
+          run-id: 45834344722
+          github-token: ${{ github.token }}
+          path: output/candidate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'numpy<2' bpy==4.3.0 scipy pillow
+      - run: python scripts/repair_side_profile.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-side-repair-candidate
+          path: |
+            output/xuanyuan_side_repair.*
+            output/side_repair_*
+            output/side_review_*.png
