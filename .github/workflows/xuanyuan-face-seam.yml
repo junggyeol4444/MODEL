@@ -1,0 +1,39 @@
+name: Xuanyuan facial seam repair
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-face-seam.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  face-seam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-scalp-fit-candidate
+          run-id: 46132709831
+          github-token: ${{ github.token }}
+          path: output/base
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-facial-relief-candidate
+          run-id: 46139011839
+          github-token: ${{ github.token }}
+          path: output/candidate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'numpy<2' bpy==4.3.0 scipy pillow
+      - run: python scripts/repair_facial_seams.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-face-seam-candidate
+          path: |
+            output/xuanyuan_face_seam_candidate.*
+            output/face_seam_*
+            output/face_*.png
