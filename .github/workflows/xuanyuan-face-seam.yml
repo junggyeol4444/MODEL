@@ -1,7 +1,7 @@
 name: Xuanyuan facial seam repair
 on:
   push:
-    paths: ['.github/workflows/xuanyuan-face-seam.yml']
+    paths: ['.github/workflows/xuanyuan-face-seam.yml', 'scripts/repair_facial_seams.py']
   workflow_dispatch:
 permissions:
   contents: read
