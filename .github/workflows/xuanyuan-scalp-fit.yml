@@ -1,0 +1,32 @@
+name: Xuanyuan scalp contact fit
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-scalp-fit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  refine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-root-candidate
+          run-id: 46118625905
+          github-token: ${{ github.token }}
+          path: output/base
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'numpy<2' bpy==4.3.0 scipy pillow
+      - run: python scripts/fit_scalp_contact.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xuanyuan-scalp-fit-candidate
+          path: |
+            output/xuanyuan_scalp_fit_candidate.*
+            output/root_*.png
+            output/scalp_fit_report.json
+            output/scalp_fit_comparison.png
