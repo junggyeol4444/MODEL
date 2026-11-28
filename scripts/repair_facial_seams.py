@@ -65,4 +65,4 @@ bpy.context.view_layer.objects.active=body
 bpy.ops.export_scene.gltf(filepath=str(p/"xuanyuan_face_seam_candidate.glb"),export_format="GLB",use_selection=True)
 bpy.ops.wm.save_as_mainfile(filepath=str(p/"xuanyuan_face_seam_candidate.blend"))
 report={"source_run":46139011839,"split_groups_before":split_before,"split_groups_after":split_after,"changed_vertices":int((np.linalg.norm(b-current,axis=1)>1e-6).sum()),"max_displacement_m":float(np.max(np.abs(b-a))),"new_inverted_faces":flip,"hair_objects_preserved":len(hair),"uv_unchanged":True,"backtracking_scale":scale,"limitations":["existing face texture and fused fringe remain","eyes and lips not independent geometry","not final avatar"],"final_avatar":False}
-(p/"face_seam_report.json").write_text(json.dumps(report,indent=2));print(report,flush=True);os._exit(0)
+(p/"face_seam_report.json").write_text(json.dumps(report,indent=2,default=lambda o:o.item() if isinstance(o,np.generic) else str(o)));print(report,flush=True);os._exit(0)
