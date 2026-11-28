@@ -1,0 +1,31 @@
+name: Xuanyuan scalp root refinement
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-hair-roots.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  refine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-layered-hair-candidate
+          run-id: 46111807103
+          github-token: ${{ github.token }}
+          path: output/base
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'numpy<2' bpy==4.3.0 scipy pillow
+      - run: python scripts/refine_hair_roots.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xuanyuan-root-candidate
+          path: |
+            output/xuanyuan_root_candidate.*
+            output/root_*.png
+            output/root_report.json
