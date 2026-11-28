@@ -1,0 +1,33 @@
+name: Xuanyuan localized facial relief
+on:
+  push:
+    paths: ['.github/workflows/xuanyuan-facial-relief.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  face:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xuanyuan-scalp-fit-candidate
+          run-id: 46132709831
+          github-token: ${{ github.token }}
+          path: output/base
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'numpy<2' bpy==4.3.0 scipy pillow
+      - run: python scripts/refine_facial_relief.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuanyuan-facial-relief-candidate
+          path: |
+            output/xuanyuan_facial_relief_candidate.*
+            output/facial_relief_*
+            output/face_*.png
